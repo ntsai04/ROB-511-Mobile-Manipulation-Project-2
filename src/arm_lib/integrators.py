@@ -1,4 +1,10 @@
-"""Second-order numerical integration methods used by the simulator."""
+"""Second-order numerical integration methods used by the simulator.
+
+All methods accept the same acceleration callback, ``qddot = f(t, q, qdot)``,
+and return fresh position/velocity lists after one timestep.  Keeping that
+one interface is what lets the checkpoint service and live arm use exactly
+the same implementations.
+"""
 
 from collections.abc import Callable
 
@@ -17,7 +23,11 @@ def euler(
 def midpoint(
     acceleration: Acceleration, t: float, q: list[float], qdot: list[float], dt: float
 ) -> tuple[list[float], list[float]]:
-    """Advance one step with midpoint/RK2 integration."""
+    """Advance one step with midpoint/RK2 integration.
+
+    First predict the state halfway through the step, then evaluate the force
+    at that halfway time and state for the full update.
+    """
     a0 = acceleration(t, q, qdot)
     half_q = [x + v * dt / 2 for x, v in zip(q, qdot)]
     half_v = [v + a * dt / 2 for v, a in zip(qdot, a0)]
@@ -29,7 +39,11 @@ def midpoint(
 def verlet(
     acceleration: Acceleration, t: float, q: list[float], qdot: list[float], dt: float
 ) -> tuple[list[float], list[float]]:
-    """Advance one step with velocity-Verlet."""
+    """Advance one step with predictor-corrector velocity Verlet.
+
+    The provisional velocity matters here because arm acceleration can depend
+    on velocity through Coriolis terms, not only on position.
+    """
     a0 = acceleration(t, q, qdot)
     new_q = [x + v * dt + a * dt * dt / 2 for x, v, a in zip(q, qdot, a0)]
     predicted_v = [v + a * dt for v, a in zip(qdot, a0)]

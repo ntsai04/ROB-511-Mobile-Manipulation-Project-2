@@ -1,4 +1,11 @@
-"""Lagrangian dynamics for a planar serial RR...R arm."""
+"""Lagrangian forward dynamics for a planar serial rotational arm.
+
+Joint angles are relative.  The world orientation of link ``i`` is therefore
+the sum of joints 0 through ``i``.  From each link's center-of-mass Jacobian we
+assemble the kinetic-energy mass matrix, obtain Coriolis/centrifugal load from
+its Christoffel symbols, add the gravity gradient, then solve the manipulator
+equation ``M qddot + C qdot + G = tau``.
+"""
 
 import math
 
@@ -10,7 +17,12 @@ class ArmDynamics:
         self.parameters = parameters
 
     def mass_matrix(self, q: list[float]) -> list[list[float]]:
-        """Return M(q), derived from the link kinetic energy."""
+        """Return symmetric ``M(q)`` assembled from every link COM Jacobian.
+
+        A joint affects the position and orientation of all downstream links.
+        Thus each link contributes to the upper-left block for its upstream
+        joints, rather than behaving as an independent pendulum.
+        """
         n = self.parameters.links
         if len(q) != n:
             raise ValueError("joint vector has wrong length")
@@ -60,7 +72,12 @@ class ArmDynamics:
         return result
 
     def coriolis_load(self, q: list[float], qdot: list[float]) -> list[float]:
-        """Return C(q, qdot) qdot using Christoffel symbols."""
+        """Return ``C(q, qdot) qdot`` using centered derivatives of ``M``.
+
+        This numerical derivative is internal to the general 2/3-link
+        Lagrangian calculation; it avoids maintaining divergent hand-written
+        symbolic expressions for the two supported configurations.
+        """
         n = self.parameters.links
         if len(qdot) != n:
             raise ValueError("joint velocity vector has wrong length")

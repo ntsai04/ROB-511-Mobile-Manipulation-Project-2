@@ -1,4 +1,9 @@
-"""Goal-oriented IK action node."""
+"""Goal-oriented IK action node.
+
+This layer turns a geometric IK solution into a held ``/joint_trajectory``
+setpoint and reports goal lifecycle events.  It does not implement control;
+``ArmSimNode`` remains the sole owner of PID state and physics stepping.
+"""
 
 import math
 import uuid
@@ -21,6 +26,7 @@ class IKActionNode:
         }
 
     def send_goal(self, args: object) -> tuple[bool, dict, str]:
+        """Solve and command a goal, preempting only after a successful solve."""
         if not isinstance(args, dict):
             return False, {}, "arguments must be an object"
         try:
@@ -69,6 +75,7 @@ class IKActionNode:
         return True, {}, ""
 
     def update(self, simulation_time: float) -> None:
+        """Publish per-tick feedback and finish goals after their dwell time."""
         goal = self.active_goal
         if goal is None:
             return

@@ -1,7 +1,13 @@
-"""TCP/JSON rosbridge gateway on 127.0.0.1:9095.
+"""TCP/JSON rosbridge gateway on ``127.0.0.1:9095``.
 
-External clients send one JSON object per line.  A reader thread handles each
-connection and a writer queue serializes outbound messages.
+This is the same small ROS-like switchboard used in Project 1.  Each external
+client gets a reader thread and a writer thread.  Readers parse one JSON value
+per line; writers are the *only* code that writes to their socket, so messages
+from service calls and topic publications cannot interleave their bytes.
+
+Pendularm's built-in nodes register their service handlers and topic listeners
+below.  Other services can still be advertised by external clients and are
+forwarded through the Hub exactly as the documented rosbridge subset requires.
 """
 from __future__ import annotations
 
@@ -91,32 +97,15 @@ class ClientConnection:
 
 
 class RosbridgeServer:
-    """Shared state for every client: Hub registry plus the A* planner node."""
+    """Shared transport state plus the in-process Pendularm node endpoints."""
 
     def __init__(self) -> None:
         self.hub = Hub()
-        self.planner = None
-        self.local_services = {}
+        # A handler has the same result/values/status triple as a service
+        # response, but only receives JSON arguments.  Keeping the gateway
+        # ignorant of individual service schemas makes its protocol reusable.
+        self.local_services: dict[str, Any] = {}
         self.topic_listeners: dict[str, list[Any]] = {}
-        try:
-            from src.heap_services import handle_heap_service
-        except ImportError:
-            try:
-                from heap_services import handle_heap_service
-            except ImportError:
-                handle_heap_service = None
-        if handle_heap_service is not None:
-            self.local_services["/heapify"] = handle_heap_service
-            self.local_services["/heap_sort"] = handle_heap_service
-        try:
-            from src.astar_node import AStarNode
-        except ImportError:
-            try:
-                from astar_node import AStarNode
-            except ImportError:
-                AStarNode = None
-        if AStarNode is not None:
-            self.planner = AStarNode()
 
     def register_local_service(self, name: str, handler: Any) -> None:
         """Register an in-process service without adding gateway dispatch code."""
@@ -217,7 +206,7 @@ class RosbridgeServer:
             self.send_status(client, "error", "unadvertise requires topic", request)
 
     def _publish(self, client: ClientConnection, request: dict[str, Any]) -> None:
-        """Fan a message out to subscribers.  /map also updates the A* grid."""
+        """Deliver a client publication to local and external subscribers."""
         topic = request.get("topic")
         if not isinstance(topic, str) or "msg" not in request:
             self.send_status(client, "error", "publish requires topic and msg", request)
@@ -225,8 +214,6 @@ class RosbridgeServer:
         if topic not in client.publishers:
             self.send_status(client, "error", "publish requires advertised topic", request)
             return
-        if topic == "/map" and self.planner is not None:
-            self.planner.set_map(request["msg"])
         for listener in self.topic_listeners.get(topic, ()):
             listener(request["msg"])
         self._broadcast(topic, request["msg"])
@@ -279,19 +266,11 @@ class RosbridgeServer:
             self.send_status(client, "error", "call_service requires service, id, and args", request)
             return
 
-        # Heap services are implemented in this process.
+        # Pendularm services are implemented in this process.  Their handler
+        # returns the same fields the caller will see in service_response.
         local_handler = self.local_services.get(service)
         if local_handler is not None:
             result, values, status = local_handler(service, request["args"])
-            self.send_service_response(client, service, request["id"], result, values, status)
-            return
-
-        # A* is also local.  A successful plan is both the service result
-        # and a publish on /path so anyone subscribed to /path sees it.
-        if service == "/plan_path" and self.planner is not None:
-            result, values, status = self.planner.plan_path(request["args"])
-            if result:
-                self._broadcast("/path", values["plan"])
             self.send_service_response(client, service, request["id"], result, values, status)
             return
 

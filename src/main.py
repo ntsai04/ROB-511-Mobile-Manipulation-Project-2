@@ -1,4 +1,10 @@
-"""Pendularm runtime: compose local nodes with the rosbridge TCP gateway."""
+"""Pendularm runtime: compose local nodes with the rosbridge TCP gateway.
+
+The public boundary is deliberately small: a TCP/JSON gateway owns sockets,
+while the arm, IK, action, and trial nodes own their domain logic.  They run in
+one process here, but communicate through the same service/topic shapes an
+external node would use.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +22,7 @@ import sys
 
 
 def _register_services(server: RosbridgeServer, node: object) -> None:
+    """Expose every service supplied by one local node through the gateway."""
     for name, handler in node.service_handlers().items():
         # The gateway's existing local-service ABI includes the service name;
         # project nodes deliberately only need their JSON argument object.
@@ -39,10 +46,12 @@ def main() -> int:
     server.register_topic_listener("/joint_trajectory", arm.accept_trajectory)
 
     def simulation_loop() -> None:
+        """Advance physics and publish snapshots without blocking TCP clients."""
         last_publish = 0.0
         while True:
-            # Each physics update uses the selected integration timestep; wall
-            # scheduling intentionally does not alter the numerical method.
+            # Each update uses the selected numerical timestep.  The short
+            # sleep merely yields CPU time; it never changes the integration
+            # method or the amount of simulated time in this step.
             arm.step(arm.timestep)
             action.update(arm.state.time)
             trial.update(arm.state.time)

@@ -1,4 +1,10 @@
-"""Arm simulation node: dynamics, integration, PID, and simulation services."""
+"""Arm simulation node: dynamics, integration, PID, and simulation services.
+
+The live arm and ``/arm_sim/integration_step`` intentionally share the same
+four integrator functions.  The checkpoint service, however, only integrates
+its local one-dimensional state: it never reads or changes this node's live
+joint state.
+"""
 
 import os
 import math
@@ -41,6 +47,7 @@ class ArmSimNode:
         }
 
     def integration_step(self, args: object) -> tuple[bool, dict, str]:
+        """Integrate ``qddot = function(t)`` without touching the live arm."""
         if not isinstance(args, dict):
             return False, {}, "arguments must be an object"
         try:
@@ -73,18 +80,32 @@ class ArmSimNode:
         return True, {"times": times, "positions": positions, "velocities": velocities}, ""
 
     def set_integrator(self, args: object) -> tuple[bool, dict, str]:
+        """Update either live-integration setting, or read both with ``{}``.
+
+        Service fields are independent.  For example, a caller can change only
+        the timestep, and a bad method does not prevent a valid timestep in
+        the same request from taking effect.  The response always describes the
+        resulting configuration.
+        """
         if not isinstance(args, dict):
             return False, {}, "arguments must be an object"
-        method = args.get("method")
-        try:
-            timestep = _number(args.get("timestep"), "timestep")
-        except ValueError as error:
-            return False, self._integrator_values(), str(error)
-        if method not in INTEGRATORS or timestep <= 0:
-            return False, self._integrator_values(), "method must be a known integrator and timestep must be positive"
+        errors: list[str] = []
         with self._lock:
-            self.integrator, self.timestep = method, timestep
-            return True, self._integrator_values(), ""
+            if "method" in args:
+                method = args["method"]
+                if isinstance(method, str) and method in INTEGRATORS:
+                    self.integrator = method
+                else:
+                    errors.append("method must be a known integrator")
+            if "timestep" in args:
+                try:
+                    timestep = _number(args["timestep"], "timestep")
+                    if timestep <= 0:
+                        raise ValueError("timestep must be positive")
+                    self.timestep = timestep
+                except ValueError as error:
+                    errors.append(str(error))
+            return not errors, self._integrator_values(), "; ".join(errors)
 
     def set_params(self, args: object) -> tuple[bool, dict, str]:
         if not isinstance(args, dict):
@@ -112,9 +133,14 @@ class ArmSimNode:
             return not errors, self._parameter_values(), "; ".join(errors)
 
     def pause(self, args: object) -> tuple[bool, dict, str]:
-        if not isinstance(args, dict) or not isinstance(args.get("data"), bool):
-            return False, {"paused": self.paused}, "data must be a boolean"
+        """Set paused state, or return it unchanged when ``data`` is omitted."""
+        if not isinstance(args, dict):
+            return False, {"paused": self.paused}, "arguments must be an object"
         with self._lock:
+            if "data" not in args:
+                return True, {"paused": self.paused}, ""
+            if not isinstance(args["data"], bool):
+                return False, {"paused": self.paused}, "data must be a boolean"
             self.paused = args["data"]
             return True, {"paused": self.paused}, ""
 
@@ -125,14 +151,21 @@ class ArmSimNode:
             # Horizontal links give the disabled arm a non-equilibrium start.
             self.state = ArmState([0.0] * self.links, [0.0] * self.links)
             self.setpoint = Setpoint([0.0] * self.links, [0.0] * self.links)
+            # Resetting the controller means forgetting its old error and
+            # target.  It must not silently change enable/disable state.
             self.controller.reset()
             self.last_effort = [0.0] * self.links
             return True, {"position": self.state.position[:], "velocity": self.state.velocity[:]}, ""
 
     def enable_pid(self, args: object) -> tuple[bool, dict, str]:
-        if not isinstance(args, dict) or not isinstance(args.get("data"), bool):
-            return False, {"enabled": self.controller.enabled}, "data must be a boolean"
+        """Enable/disable PID, or query its enabled state with ``{}``."""
+        if not isinstance(args, dict):
+            return False, {"enabled": self.controller.enabled}, "arguments must be an object"
         with self._lock:
+            if "data" not in args:
+                return True, {"enabled": self.controller.enabled}, ""
+            if not isinstance(args["data"], bool):
+                return False, {"enabled": self.controller.enabled}, "data must be a boolean"
             self.controller.set_enabled(args["data"])
             return True, {"enabled": self.controller.enabled}, ""
 
@@ -154,6 +187,7 @@ class ArmSimNode:
             return not errors, self._gain_values(), "; ".join(errors)
 
     def step(self, dt: float) -> None:
+        """Advance one fixed numerical timestep unless the simulation is paused."""
         with self._lock:
             if self.paused:
                 return
@@ -188,6 +222,7 @@ class ArmSimNode:
             self.setpoint = Setpoint(position, velocity)
 
     def joint_state_message(self) -> dict:
+        """Return a copied JointState-shaped snapshot safe to publish later."""
         with self._lock:
             seconds = int(self.state.time)
             nanoseconds = int((self.state.time - seconds) * 1_000_000_000)

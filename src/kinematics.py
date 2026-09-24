@@ -1,4 +1,9 @@
-"""Forward and inverse kinematics for a planar serial arm."""
+"""Forward and closed-form inverse kinematics for a planar serial arm.
+
+For three links, an optional end-effector orientation first turns the problem
+into a two-link wrist-position solve.  The Law of Cosines then produces one
+valid elbow configuration; the final joint supplies the requested orientation.
+"""
 
 import math
 
@@ -23,7 +28,11 @@ def forward_orientation(q: list[float]) -> float:
 def solve_ik(
     x: float, y: float, lengths: list[float], phi: float | None = None
 ) -> list[float]:
-    """Solve the closed-form 2-link or 3-link planar IK problem."""
+    """Solve a 2-link target or the orientation-constrained 3-link target.
+
+    Exact workspace boundaries are accepted.  Small clamping after the range
+    test only removes harmless floating-point overshoot before ``acos``.
+    """
     if len(lengths) not in (2, 3):
         raise ValueError("IK requires a 2- or 3-link arm")
     if len(lengths) == 3:

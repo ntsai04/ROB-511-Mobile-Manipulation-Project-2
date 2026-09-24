@@ -1,4 +1,9 @@
-"""Parser for the integration checkpoint's expression language."""
+"""Safe parser for the integration checkpoint's small expression language.
+
+Expressions become ``float -> float`` callables instead of being passed to
+``eval``.  That keeps a service request limited to arithmetic in ``t`` and
+makes malformed input an ordinary service error rather than executable code.
+"""
 
 import math
 from collections.abc import Callable
@@ -21,7 +26,11 @@ def parse_expression(source: str) -> Callable[[float], float]:
 
 
 class _Parser:
-    """Small recursive-descent parser.  AST nodes are float -> float callables."""
+    """Recursive-descent parser whose AST nodes are ``float -> float`` callables.
+
+    The method order mirrors the precedence table in the handout: sum,
+    product, power (right associative), unary minus, and atoms.
+    """
     def __init__(self, source: str) -> None:
         self.tokens = self._tokenize(source)
         self.index = 0
@@ -125,14 +134,24 @@ def _safe_function(function: Callable[[float], float], value: float) -> float:
 
 
 def _binary(operator: str, left, right):
+    """Build a numeric binary-expression node that turns domain errors into NaN."""
     def evaluate(t: float) -> float:
         a, b = left(t), right(t)
         try:
-            if operator == "+": return a + b
-            if operator == "-": return a - b
-            if operator == "*": return a * b
-            if operator == "/": return a / b
-            return a ** b
+            if operator == "+":
+                value = a + b
+            elif operator == "-":
+                value = a - b
+            elif operator == "*":
+                value = a * b
+            elif operator == "/":
+                value = a / b
+            else:
+                value = a ** b
+            # Python produces a complex number for (-1) ** 0.5 rather than
+            # raising.  The checkpoint's scalar state cannot integrate that,
+            # so treat it like every other real-domain error.
+            return float(value) if not isinstance(value, complex) else math.nan
         except (ValueError, OverflowError, ZeroDivisionError):
             return math.nan
     return evaluate

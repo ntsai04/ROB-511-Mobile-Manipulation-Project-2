@@ -13,9 +13,14 @@ class PIDController:
         self.enabled = False
 
     def reset(self) -> None:
-        """Clear accumulated integral and disable control."""
+        """Clear accumulated integral without changing whether control is enabled.
+
+        Plant reset is deliberately not the same operation as disabling the
+        controller.  A caller may reset an arm while it is being servoed and
+        reasonably expect it to remain servoed afterward; only the state that
+        remembers the old error must be discarded.
+        """
         self.integral = [0.0] * len(self.integral)
-        self.enabled = False
 
     def set_enabled(self, enabled: bool) -> None:
         """Enable or disable control, clearing integral when re-enabled."""
