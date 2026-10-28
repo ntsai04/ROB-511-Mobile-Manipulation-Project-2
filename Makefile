@@ -1,19 +1,21 @@
 PYTHON ?= python3
-VIS_PORT ?= 8002
 
-.PHONY: build run test visualizer clean
+.PHONY: build run test visualizer submission clean
 
 build:
 	$(PYTHON) -m compileall -q src
 
 run:
-	sh scripts/run.sh
+	$(PYTHON) src/main.py
 
 test:
 	@$(PYTHON) tests/run_tests.py $(TESTS)
 
 visualizer:
-	@$(PYTHON) debug_visualizer/server.py --port $(VIS_PORT)
+	$(PYTHON) visualizer/server.py
+
+submission:
+	$(PYTHON) tools/package_submission.py
 
 clean:
 	$(PYTHON) -c "import pathlib, shutil; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]"

@@ -1,379 +1,316 @@
+from support import silent, close, rejects, endpoint, two_link_terms, potential, vector_step, checkpoint
 import math
-from checks import (Rosbridge, silent, call, close, vector, session, stamp, subscribe, state,
-                    trajectory, frozen_plant, integrate, ik_roundtrip, fk)
 
 
 @silent
-def test_01_euler_uses_old_velocity_and_start_time():
-    with Rosbridge() as ros:
-        result = integrate(ros, 'euler')
-        x, v, dt = 1.25, -0.4, 0.125
-        for i in range(7):
-            t = i * dt
-            x, v = x + v*dt, v + (t*t + 3*t - 1)*dt
-            close(result['positions'][i+1], x)
-            close(result['velocities'][i+1], v)
+def test_01_euler_coupled_vector():
+    vector_step("euler", [1.1, -2.2, .56, -.96])
 
 
 @silent
-def test_02_midpoint_uses_half_time_and_half_velocity():
-    with Rosbridge() as ros:
-        result = integrate(ros, 'midpoint')
-        x, v, dt = 1.25, -0.4, 0.125
-        for i in range(7):
-            t = i * dt
-            x += v*dt + (t*t + 3*t - 1)*dt*dt/2
-            v += ((t+dt/2)**2 + 3*(t+dt/2) - 1)*dt
-            close(result['positions'][i+1], x)
-            close(result['velocities'][i+1], v)
+def test_02_midpoint_coupled_vector():
+    vector_step("midpoint", [1.106, -2.196, .577, -.947])
 
 
 @silent
-def test_03_verlet_averages_endpoint_accelerations():
-    with Rosbridge() as ros:
-        result = integrate(ros, 'verlet')
-        x, v, dt = 1.25, -0.4, 0.125
-        for i in range(7):
-            t = i * dt
-            a, b = t*t+3*t-1, (t+dt)**2+3*(t+dt)-1
-            x += v*dt + a*dt*dt/2
-            v += (a+b)*dt/2
-            close(result['positions'][i+1], x)
-            close(result['velocities'][i+1], v)
+def test_03_verlet_predictor_corrector():
+    vector_step("verlet", [1.106, -2.196, .5783, -.9471])
 
 
 @silent
-def test_04_rk4_matches_polynomial_antiderivatives():
-    with Rosbridge() as ros:
-        result = integrate(ros, 'rk4')
-        for i, t in enumerate(result['times']):
-            close(result['positions'][i], 1.25 - 0.4*t + t**4/12 + t**3/2 - t*t/2)
-            close(result['velocities'][i], -0.4 + t**3/3 + 1.5*t*t - t)
+def test_04_rk4_coupled_vector():
+    vector_step("rk4", [166051/150000, -43901/20000, 137993/240000, -567109/600000])
 
 
 @silent
-def test_05_expression_associativity_precedence_and_unary():
-    with Rosbridge() as ros:
-        for expression, acceleration in [('2^3^2',512), ('8/4/2',1), ('-2^2',4),
-                                          ('2+3*4',14), ('(2+3)*4',20), ('0.01 + .5',0.51)]:
-            result = integrate(ros, 'rk4', expression, x0=0, v0=0, dt=0.25, steps=2)
-            close(result['positions'][-1], acceleration*0.5**2/2)
-            close(result['velocities'][-1], acceleration*0.5)
+def test_05_euler_ramp_history():
+    data = checkpoint("euler", "t")
+    h = .125
+    for n in range(9):
+        close(data["velocities"][n], -.7+h*h*n*(n-1)/2)
+        close(data["positions"][n], 1.25-.7*n*h+h**3*n*(n-1)*(n-2)/6)
 
 
 @silent
-def test_06_expression_named_functions_and_default_velocity():
-    with Rosbridge() as ros:
-        result = call(ros, '/arm_sim/integration_step', {'function': 'sin(0)+cos(0)+tan(0)+exp(0)+sqrt(9)+ln(exp(1))+abs(-2)',
-                      'x0': -2, 'dt': 0.25, 'steps': 4, 'integrator': 'rk4'})
-        vector(result['velocities'], [0,2,4,6,8])
-        close(result['positions'][-1], 2)
+def test_06_midpoint_ramp_history():
+    data = checkpoint("midpoint", "t")
+    for n in range(9):
+        t = n*.125
+        close(data["velocities"][n], -.7+t*t/2)
+        close(data["positions"][n], 1.25-.7*t+t**3/6-n*.125**3/6)
 
 
 @silent
-def test_07_malformed_expressions_reject_and_recover():
-    with Rosbridge() as ros:
-        for expression in ['', '(', 'sin(t', 'foo(t)', 't garbage', '1 2', 't@2', 't+']:
-            call(ros, '/arm_sim/integration_step', {'function': expression, 'x0': 0, 'dt': 0.1,
-                 'steps': 1, 'integrator': 'rk4'}, success=False)
-        integrate(ros, 'rk4')
+def test_07_verlet_ramp_history():
+    data = checkpoint("verlet", "t")
+    for n in range(9):
+        t = n*.125
+        close(data["velocities"][n], -.7+t*t/2)
+        close(data["positions"][n], 1.25-.7*t+t**3/6-n*.125**3/6)
 
 
 @silent
-def test_08_integration_argument_validation_and_recovery():
-    with Rosbridge() as ros:
-        base = {'function':'t', 'x0':0, 'dt':0.1, 'steps':2, 'integrator':'rk4'}
-        for change in [{'dt':0}, {'dt':-0.1}, {'steps':0}, {'steps':-1}, {'steps':1.5},
-                       {'integrator':'bogus'}, {'x0':'x'}]:
-            call(ros, '/arm_sim/integration_step', dict(base, **change), success=False)
-        integrate(ros, 'rk4')
+def test_08_rk4_polynomial_history():
+    data = checkpoint("rk4", "t^2 + 3*t - 1")
+    for n in range(9):
+        t = n*.125
+        close(data["velocities"][n], -.7+t**3/3+1.5*t*t-t)
+        close(data["positions"][n], 1.25-.7*t+t**4/12+.5*t**3-.5*t*t)
 
 
 @silent
-def test_09_checkpoint_service_does_not_change_live_state():
-    with session() as (ros, n):
-        subscribe(ros)
-        before = state(ros, n)
-        for method in ['euler', 'midpoint', 'verlet', 'rk4']:
-            integrate(ros, method, x0=123, v0=-9)
-        after = state(ros, n)
-        for field in ['position', 'velocity', 'effort']:
-            vector(after[field], before[field])
-        close(stamp(after), stamp(before))
+def test_09_expression_precedence():
+    from arm_lib.expr import parse_expression
+    for text, t, value in [("2^3^2", 0, 512), ("-2^2", 0, 4), ("10-3-2", 0, 5),
+                           ("24/4/2", 0, 3), ("2+3*4", 0, 14), ("(2+3)*4", 0, 20),
+                           ("-t + 2*(t-1)^2", .5, 0), (".25 + .01*t", 2, .27)]:
+        close(parse_expression(text)(t), value)
 
 
 @silent
-def test_10_integrator_partial_updates_queries_and_rejection():
-    with session() as (ros, n):
-        for method in ['euler', 'midpoint', 'verlet', 'rk4']:
-            assert call(ros, '/arm_sim/set_integrator', {'method':method})['method'] == method
-        values = call(ros, '/arm_sim/set_integrator', {'timestep':0.003})
-        close(values['timestep'], 0.003)
-        assert values['method'] == 'rk4'
-        values = call(ros, '/arm_sim/set_integrator', {'method':'invalid', 'timestep':0.007}, success=False)
-        assert values['method'] == 'rk4'
-        close(values['timestep'], 0.007)
-        values = call(ros, '/arm_sim/set_integrator', {'timestep':0}, success=False)
-        close(values['timestep'], 0.007)
+def test_10_expression_functions_and_rejection():
+    from arm_lib.expr import parse_expression
+    for name, expected in [("sin", math.sin(.4)), ("cos", math.cos(.4)), ("tan", math.tan(.4)),
+                           ("exp", math.exp(.4)), ("sqrt", math.sqrt(.4)), ("ln", math.log(.4)), ("abs", .4)]:
+        close(parse_expression(name+"(t)")(.4), expected)
+    for text in ["", "(t", "t)", "unknown(t)", "1 2", "t@2", "t+", "sin t", "t t"]:
+        rejects(parse_expression, text)
+    assert math.isnan(parse_expression("sqrt(-1)")(0))
 
 
 @silent
-def test_11_parameter_fields_validate_independently_and_echo():
-    with session() as (ros, n):
-        values = call(ros, '/arm_sim/set_params', {'gravity':2.3, 'masses':[1.2]*n, 'lengths':[0.8]*n})
-        assert values == call(ros, '/arm_sim/set_params')
-        for bad in [[1]*(n-1), [0]*n, [-1]*n]:
-            values = call(ros, '/arm_sim/set_params', {'masses':bad, 'gravity':3.4}, success=False)
-            vector(values['masses'], [1.2]*n)
-            close(values['gravity'], 3.4)
-        values = call(ros, '/arm_sim/set_params', {'gravity':-1, 'lengths':[0.7]*n}, success=False)
-        close(values['gravity'], 3.4)
-        vector(values['lengths'], [0.7]*n)
-        values = call(ros, '/arm_sim/set_params', {'lengths':[0]*n}, success=False)
-        vector(values['lengths'], [0.7]*n)
+def test_11_pid_position_velocity_signs():
+    from arm_lib.pid import PIDController
+    pid = PIDController(3)
+    pid.set_gains(kp=[2, 3, 4], kd=[5, 6, 7])
+    pid.set_enabled(True)
+    close(pid.effort([1, -2, .3], [.2, -.4, .8], [-1, 1, .7], [.5, .1, -.2], .1), [-2.5, 12, -5.4])
 
 
 @silent
-def test_12_pid_gain_fields_validate_independently_and_echo():
-    with session() as (ros, n):
-        values = call(ros, '/pid_controller/set_gains', {'kp':[2]*n, 'ki':[3]*n, 'kd':[4]*n})
-        assert values == call(ros, '/pid_controller/set_gains')
-        for key in ['kp', 'ki', 'kd']:
-            old = values[key][:]
-            values = call(ros, '/pid_controller/set_gains', {key:[-1]*n}, success=False)
-            vector(values[key], old)
-            values = call(ros, '/pid_controller/set_gains', {key:[1]*(n-1)}, success=False)
-            vector(values[key], old)
-        values = call(ros, '/pid_controller/set_gains', {'kp':[-1]*n, 'ki':[0.7]*n}, success=False)
-        vector(values['kp'], [2]*n)
-        vector(values['ki'], [0.7]*n)
+def test_12_pid_integral_dt_and_bounds():
+    from arm_lib.pid import PIDController
+    pid = PIDController(2)
+    pid.set_gains(ki=[2, 3])
+    pid.set_enabled(True)
+    close(pid.effort([0, 0], [0, 0], [2, -3], [0, 0], .2), [.8, -1.8])
+    close(pid.effort([0, 0], [0, 0], [2, -3], [0, 0], .3), [2, -4.5])
+    for _ in range(100):
+        pid.effort([0, 0], [0, 0], [100, -100], [0, 0], 1)
+    close(pid.integral, [pid.integral_limit, -pid.integral_limit])
+    close(pid.effort([0, 0], [0, 0], [-1, 1], [0, 0], .1), [2*(pid.integral_limit-.1), 3*(-pid.integral_limit+.1)])
 
 
 @silent
-def test_13_pause_freezes_clock_state_and_keeps_publishing():
-    with session() as (ros, n):
-        call(ros, '/arm_sim/set_params', {'gravity':9.81})
-        subscribe(ros)
-        call(ros, '/arm_sim/pause', {'data':False})
-        moving = state(ros, n, lambda s: stamp(s)>0.03)
-        assert any(abs(v)>0.01 for v in moving['velocity'])
-        call(ros, '/arm_sim/pause', {'data':True})
-        ros.pending.clear()
-        for _ in range(3):
-            state(ros,n)
-        first = state(ros,n)
-        for _ in range(4):
-            latest = state(ros,n)
-        close(stamp(first),stamp(latest))
-        vector(first['position'],latest['position'])
-        vector(first['velocity'],latest['velocity'])
-        assert call(ros, '/arm_sim/pause')['paused'] is True
+def test_13_pid_disabled_freezes_integral():
+    from arm_lib.pid import PIDController
+    pid = PIDController(2)
+    pid.set_gains(kp=[3, 4], ki=[1, 2], kd=[5, 6])
+    close(pid.effort([1, 2], [3, 4], [9, 8], [7, 6], .5), [0, 0])
+    close(pid.integral, [0, 0])
+    pid.set_enabled(True)
+    pid.effort([0, 0], [0, 0], [1, 2], [0, 0], .5)
+    pid.set_enabled(False)
+    before = pid.integral[:]
+    close(pid.effort([0, 0], [0, 0], [3, 4], [0, 0], .5), [0, 0])
+    close(pid.integral, before)
 
 
 @silent
-def test_14_reset_clears_motion_old_target_and_pid_integral():
-    with session() as (ros, n):
-        frozen_plant(ros,n,ki=2)
-        trajectory(ros,n,[0.4]*n)
-        call(ros,'/arm_sim/pause',{'data':False})
-        state(ros,n,lambda s: stamp(s)>0.15)
-        call(ros,'/arm_sim/pause',{'data':True})
-        values = call(ros,'/arm_sim/reset')
-        vector(values['position'],[0]*n)
-        vector(values['velocity'],[0]*n)
-        assert call(ros,'/pid_controller/enable')['enabled'] is True
-        ros.pending.clear()
-        call(ros,'/arm_sim/pause',{'data':False})
-        latest = state(ros,n,lambda s: stamp(s)>0.03 and max(map(abs,s['effort']))<1e-8)
-        vector(latest['position'],[0]*n)
+def test_14_pid_reenable_and_reset():
+    from arm_lib.pid import PIDController
+    pid = PIDController(2)
+    pid.set_enabled(True)
+    pid.effort([0, 0], [0, 0], [1, -1], [0, 0], .5)
+    pid.set_enabled(True)
+    close(pid.integral, [.5, -.5])
+    pid.set_enabled(False)
+    pid.set_enabled(True)
+    close(pid.integral, [0, 0])
+    pid.effort([0, 0], [0, 0], [1, -1], [0, 0], .5)
+    pid.reset()
+    assert pid.enabled
+    close(pid.integral, [0, 0])
 
 
 @silent
-def test_15_disabled_pid_reports_zero_effort():
-    with session() as (ros,n):
-        call(ros,'/pid_controller/set_gains',{'kp':[20]*n,'ki':[3]*n,'kd':[5]*n})
-        trajectory(ros,n,[0.5]*n,[0.8]*n)
-        subscribe(ros)
-        call(ros,'/arm_sim/pause',{'data':False})
-        latest = state(ros,n,lambda s: stamp(s)>0.03)
-        vector(latest['effort'],[0]*n)
-        call(ros,'/pid_controller/enable',{'data':True})
-        latest = state(ros,n,lambda s:max(map(abs,s['effort']))>0.1)
-        call(ros,'/pid_controller/enable',{'data':False})
-        state(ros,n,lambda s:max(map(abs,s['effort']))==0)
+def test_15_pid_gain_updates_preserve_history():
+    from arm_lib.pid import PIDController
+    pid = PIDController(2)
+    values = [2, 3]
+    pid.set_gains(kp=values, ki=[1, 1], kd=[4, 5])
+    values[0] = 99
+    pid.set_enabled(True)
+    pid.effort([0, 0], [0, 0], [1, 2], [0, 0], .25)
+    pid.set_gains(ki=[2, 4])
+    close([pid.kp, pid.kd, pid.integral], [[2, 3], [4, 5], [.25, .5]])
+    close(pid.effort([0, 0], [0, 0], [0, 0], [0, 0], .1), [.5, 2])
+    rejects(pid.set_gains, [1])
 
 
 @silent
-def test_16_proportional_term_uses_last_waypoint_per_joint():
-    with session() as (ros,n):
-        frozen_plant(ros,n,kp=3)
-        target = [0.2*(i+1)*(-1)**i for i in range(n)]
-        trajectory(ros,n,target,first=[-0.9]*n)
-        call(ros,'/arm_sim/pause',{'data':False})
-        latest=state(ros,n,lambda s:stamp(s)>0.03)
-        vector(latest['effort'],[3*v for v in target],1e-6)
+def test_16_mass_matrix_two_link_closed_form():
+    from arm_lib.arm_dynamics import ArmDynamics
+    from arm_lib.internal import ArmParameters
+    masses, lengths = [1.7, .6], [.8, 1.3]
+    dynamics = ArmDynamics(ArmParameters(2, 9.81, masses, lengths))
+    for q in [[0, 0], [.7, -.9], [-1.2, 2.1]]:
+        expected, _, _ = two_link_terms(q, [0, 0], masses, lengths, 9.81)
+        matrix = dynamics.mass_matrix(q)
+        close(matrix, expected)
+        assert matrix[0][0]*matrix[1][1]-matrix[0][1]**2 > 0
+    three = ArmDynamics(ArmParameters(3))
+    close(three.mass_matrix([0, 0, 0]), [[9, 14/3, 4/3], [14/3, 8/3, 5/6], [4/3, 5/6, 1/3]])
 
 
 @silent
-def test_17_derivative_term_uses_commanded_velocity_and_defaults():
-    with session() as (ros,n):
-        frozen_plant(ros,n,kd=4)
-        desired = [0.3*(-1)**i for i in range(n)]
-        trajectory(ros,n,[0]*n,desired)
-        call(ros,'/arm_sim/pause',{'data':False})
-        latest=state(ros,n,lambda s:stamp(s)>0.03)
-        vector(latest['effort'],[4*v for v in desired],1e-6)
-        call(ros,'/arm_sim/pause',{'data':True})
-        trajectory(ros,n,[0]*n,[])  # wrong-length velocities default to zero
-        call(ros,'/arm_sim/pause',{'data':False})
-        latest=state(ros,n,lambda s: max(map(abs,s['effort']))<1e-6)
-        vector(latest['effort'],[0]*n,1e-6)
+def test_17_gravity_three_link_potential_gradient():
+    from arm_lib.arm_dynamics import ArmDynamics
+    from arm_lib.internal import ArmParameters
+    masses, lengths, gravity = [1.3, .8, 2], [.6, 1.2, .7], 4.2
+    dynamics = ArmDynamics(ArmParameters(3, gravity, masses, lengths))
+    q = [.4, -.9, .7]
+    expected = []
+    for j in range(3):
+        plus, minus = q[:], q[:]
+        plus[j] += 1e-5
+        minus[j] -= 1e-5
+        expected.append((potential(plus, masses, lengths, gravity)-potential(minus, masses, lengths, gravity))/2e-5)
+    close(dynamics.gravity_load(q), expected, 1e-8)
 
 
 @silent
-def test_18_integral_accumulates_preserves_gains_and_clears_on_enable():
-    with session() as (ros,n):
-        frozen_plant(ros,n,ki=2)
-        trajectory(ros,n,[0.5]*n)
-        call(ros,'/arm_sim/pause',{'data':False})
-        first=state(ros,n,lambda s:stamp(s)>0.08)
-        last=state(ros,n,lambda s:stamp(s)>0.2)
-        delta=stamp(last)-stamp(first)
-        vector([a-b for a,b in zip(last['effort'],first['effort'])],[delta]*n,2e-6)
-        call(ros,'/arm_sim/pause',{'data':True})
-        call(ros,'/pid_controller/set_gains',{'ki':[4]*n})
-        ros.pending.clear()
-        call(ros,'/arm_sim/pause',{'data':False})
-        doubled=state(ros,n,lambda s:stamp(s)>stamp(last)+0.02)
-        assert min(doubled['effort'])>1.8*min(last['effort'])
-        call(ros,'/arm_sim/pause',{'data':True})
-        call(ros,'/pid_controller/enable',{'data':False})
-        call(ros,'/pid_controller/enable',{'data':True})
-        ros.pending.clear()
-        call(ros,'/arm_sim/pause',{'data':False})
-        cleared=state(ros,n,lambda s:stamp(s)>stamp(doubled) and max(map(abs,s['effort']))<0.15)
-        assert max(map(abs,cleared['effort']))<0.15
+def test_18_coriolis_two_link_closed_form():
+    from arm_lib.arm_dynamics import ArmDynamics
+    from arm_lib.internal import ArmParameters
+    masses, lengths = [1.7, .6], [.8, 1.3]
+    dynamics = ArmDynamics(ArmParameters(2, 9.81, masses, lengths))
+    for q, v in [([.7, -.9], [1.2, -.4]), ([-.8, 1.2], [-.7, .9]), ([.3, .8], [0, 0])]:
+        _, expected, _ = two_link_terms(q, v, masses, lengths, 9.81)
+        close(dynamics.coriolis_load(q, v), expected, 2e-8)
 
 
 @silent
-def test_19_pid_converges_to_small_target_without_gravity():
-    with session() as (ros,n):
-        call(ros,'/arm_sim/set_params',{'masses':[1.0]*n,'lengths':[0.5]*n})
-        call(ros,'/pid_controller/set_gains',{'kp':[12]*n,'kd':[3]*n})
-        call(ros,'/arm_sim/set_integrator',{'timestep':0.001})
-        call(ros,'/pid_controller/enable',{'data':True})
-        subscribe(ros)
-        target=[0.18*(-1)**i for i in range(n)]
-        trajectory(ros,n,target)
-        call(ros,'/arm_sim/pause',{'data':False})
-        latest=state(ros,n,lambda s:stamp(s)>1.8,timeout=20)
-        vector(latest['position'],target,0.08)
+def test_19_acceleration_gravity_torque_balance():
+    from arm_lib.arm_dynamics import ArmDynamics
+    from arm_lib.internal import ArmParameters
+    masses, lengths = [1.7, .6], [.8, 1.3]
+    dynamics = ArmDynamics(ArmParameters(2, 9.81, masses, lengths))
+    for q, v, torque in [([0, 0], [0, 0], [0, 0]), ([.7, -.9], [1.2, -.4], [2, -3]),
+                         ([-.8, 1.2], [-.7, .9], [-4, 5])]:
+        matrix, coriolis, gravity = two_link_terms(q, v, masses, lengths, 9.81)
+        acceleration = dynamics.acceleration(q, v, torque)
+        close([sum(matrix[i][j]*acceleration[j] for j in range(2))+coriolis[i]+gravity[i] for i in range(2)], torque, 3e-8)
+    matrix, _, gravity = two_link_terms([.4, -.7], [0, 0], masses, lengths, 9.81)
+    close(dynamics.acceleration([.4, -.7], [0, 0], gravity), [0, 0])
 
 
 @silent
-def test_20_zero_gravity_and_zero_torque_preserve_rest():
-    with session() as (ros,n):
-        subscribe(ros)
-        call(ros,'/arm_sim/pause',{'data':False})
-        latest=state(ros,n,lambda s:stamp(s)>0.1)
-        vector(latest['position'],[0]*n)
-        vector(latest['velocity'],[0]*n)
-        vector(latest['effort'],[0]*n)
+def test_20_forward_kinematics_relative_angles():
+    from kinematics import forward_position, forward_orientation
+    for q, lengths in [([math.pi/2, -math.pi/2], [2, 1]), ([.3, -.8, 1.2], [.7, 1.4, .5]),
+                       ([-1.3, .8, -.4], [2, .3, .6])]:
+        close(forward_position(q, lengths), endpoint(q, lengths))
+        close(forward_orientation(q), sum(q))
+    rejects(forward_position, [0], [1, 2])
 
 
 @silent
-def test_21_gravity_acceleration_matches_coupled_rigid_rods():
-    with session() as (ros,n):
-        lengths=[0.7+0.2*i for i in range(n)]
-        masses=[1+0.4*i for i in range(n)]
-        gravity=4.0
-        call(ros,'/arm_sim/set_params',{'gravity':gravity,'lengths':lengths,'masses':masses})
-        call(ros,'/arm_sim/set_integrator',{'timestep':0.001})
-        # At horizontal rest, each rod's angular inertia is m*l^2/12;
-        # COM speed from joint j is the distance from j to that COM.
-        matrix=[[0.0]*n for _ in range(n)]
-        load=[0.0]*n
-        for k in range(n):
-            lever=[sum(lengths[j:k])+lengths[k]/2 for j in range(k+1)]
-            for j in range(k+1):
-                load[j]-=masses[k]*gravity*lever[j]
-                for i in range(k+1):
-                    matrix[j][i]+=masses[k]*(lever[j]*lever[i]+lengths[k]**2/12)
-        # Independent Cholesky solve of SPD M*a=-G.
-        lower=[[0.0]*n for _ in range(n)]
-        for i in range(n):
-            for j in range(i+1):
-                x=matrix[i][j]-sum(lower[i][k]*lower[j][k] for k in range(j))
-                lower[i][j]=math.sqrt(x) if i==j else x/lower[j][j]
-        y=[0.0]*n
-        for i in range(n):
-            y[i]=(load[i]-sum(lower[i][j]*y[j] for j in range(i)))/lower[i][i]
-        acceleration=[0.0]*n
-        for i in reversed(range(n)):
-            acceleration[i]=(y[i]-sum(lower[j][i]*acceleration[j] for j in range(i+1,n)))/lower[i][i]
-        subscribe(ros)
-        call(ros,'/arm_sim/pause',{'data':False})
-        latest=state(ros,n,lambda s:0.006<stamp(s)<0.04,timeout=3)
-        vector([v/stamp(latest) for v in latest['velocity']],acceleration,0.02)
+def test_21_ik_two_link_unequal_quadrants():
+    from kinematics import solve_ik
+    lengths = [1.7, .6]
+    for target in [[1.5, .5], [-1.5, .5], [-1.5, -.5], [1.5, -.5], [0, 1.5], [0, -1.5]]:
+        close(endpoint(solve_ik(*target, lengths), lengths), target)
 
 
 @silent
-def test_22_ik_roundtrips_quadrants_and_updated_link_lengths():
-    with session() as (ros,n):
-        for lengths in [[1]*n,[0.7+0.3*i for i in range(n)]]:
-            call(ros,'/arm_sim/set_params',{'lengths':lengths})
-            for first in [0.2,1.8,-2.1,-0.7]:
-                q=[first,-0.9]+([0.4] if n==3 else [])
-                ik_roundtrip(ros,q,lengths)
+def test_22_ik_workspace_boundaries():
+    from kinematics import solve_ik
+    for target in [[2.5, 0], [-2.5, 0], [0, 1.5], [0, -1.5]]:
+        close(endpoint(solve_ik(*target, [2, .5]), [2, .5]), target)
+    close(endpoint(solve_ik(0, 0, [1, 1]), [1, 1]), [0, 0])
+    for target in [[2.50001, 0], [1.49999, 0], [0, 0]]:
+        rejects(solve_ik, *target, [2, .5])
 
 
 @silent
-def test_23_ik_reach_boundaries_inner_hole_orientation_and_bad_input():
-    with session() as (ros,n):
-        lengths=[2,0.75]+([0.5] if n==3 else [])
-        call(ros,'/arm_sim/set_params',{'lengths':lengths})
-        ik_roundtrip(ros,[0]*n,lengths)
-        if n==2:
-            ik_roundtrip(ros,[0,math.pi],lengths)
-            call(ros,'/ik/solve',{'x':0,'y':0},success=False)
-        else:
-            # Position inside total reach, but desired wrist beyond links 1+2.
-            call(ros,'/ik/solve',{'x':3.0,'y':0,'phi':math.pi},success=False)
-        for args in [{'x':sum(lengths)+0.2,'y':0}, {'x':0}, {'x':'a','y':0}]:
-            call(ros,'/ik/solve',args,success=False)
+def test_23_ik_three_link_orientation():
+    from kinematics import solve_ik
+    lengths = [.9, 1.4, .6]
+    for original in [[.4, -.9, .7], [-1.2, 1.6, -.2], [2, .7, -1.1]]:
+        target = endpoint(original, lengths)
+        phi = sum(original)
+        solved = solve_ik(*target, lengths, phi)
+        close(endpoint(solved, lengths), target)
+        close(sum(solved), phi)
+    solved = solve_ik(1.5, .2, lengths)
+    close(endpoint(solved, lengths), [1.5, .2])
+    close(sum(solved), 0)
 
 
 @silent
-def test_24_action_goal_rejection_cancel_and_preemption():
-    with session() as (ros,n):
-        ros.subscribe('/ik_action/result','std_msgs/String',timeout=2)
-        args={'x':n-0.3,'y':0.2,'phi':0,'success_hold':100}
-        first=call(ros,'/ik_action/send_goal',args)['goal_id']
-        assert isinstance(first,str) and first
-        call(ros,'/ik_action/send_goal',{'x':n+10,'y':0},success=False)
-        call(ros,'/ik_action/cancel_goal',{'goal_id':'wrong'},success=False)
-        second=call(ros,'/ik_action/send_goal',args)['goal_id']
-        assert first!=second
-        result=ros.next_message('/ik_action/result',timeout=2,match=lambda m:m['goal_id']==first)
-        assert result['outcome']=='preempted' and math.isfinite(result['final_distance'])
-        call(ros,'/ik_action/cancel_goal',{'goal_id':second})
-        result=ros.next_message('/ik_action/result',timeout=2,match=lambda m:m['goal_id']==second)
-        assert result['outcome']=='preempted'
-        call(ros,'/ik_action/cancel_goal',{},success=False)
+def test_24_simulation_services_and_state():
+    from arm_sim_node import ArmSimNode
+    from ik_node import IKNode
+    arm = ArmSimNode(3)
+    success, values, _ = arm.set_params({"gravity": -1, "lengths": [.9, 1.4, .6], "masses": [1, 2, 3]})
+    assert not success
+    close(values["gravity"], 9.81)
+    close(values["lengths"], [.9, 1.4, .6])
+    ik = IKNode(arm.parameters)
+    assert ik.solve({"x": 1.5, "y": .2, "phi": 0})[0]
+    success, values, _ = arm.set_integrator({"method": "bad", "timestep": .01})
+    assert not success and values["method"] == "rk4"
+    close(values["timestep"], .01)
+    success, values, _ = arm.set_gains({"kp": [1, 2, 3], "ki": [-1, 0, 0]})
+    assert not success
+    close(values["kp"], [1, 2, 3])
+    arm.enable_pid({"data": True})
+    arm.accept_trajectory({"points": [{"positions": [1, 1, 1]}, {"positions": [.2, -.3, .5]}]})
+    close(arm.setpoint.position, [.2, -.3, .5])
+    close(arm.setpoint.velocity, [0, 0, 0])
+    arm.state.position = [.4, -.2, .1]
+    arm.state.velocity = [.1, -.3, .2]
+    arm.state.time = 4
+    arm.controller.integral = [.3, -.4, .2]
+    arm.pause({"data": True})
+    arm.step(.01)
+    close([arm.state.time, arm.state.position, arm.state.velocity, arm.controller.integral],
+          [4, [.4, -.2, .1], [.1, -.3, .2], [.3, -.4, .2]])
+    arm.reset({})
+    assert arm.controller.enabled and arm.paused
+    close([arm.state.position, arm.setpoint.position, arm.controller.integral], [[0, 0, 0]]*3)
+    close([arm.state.velocity, arm.state.time], [[0, 0, 0], 0])
+    request = dict(function="t", x0=1, xdot0=2, dt=.1, steps=3, integrator="rk4")
+    for field, value in [("function", "t+"), ("dt", 0), ("steps", 0), ("integrator", "bad")]:
+        assert not arm.integration_step(dict(request, **{field: value}))[0]
+    assert arm.integration_step(request)[0]
 
 
 @silent
-def test_25_trial_start_skip_stop_clear_status():
-    with session() as (ros,n):
-        ros.subscribe('/ik_trial/status','std_msgs/String',timeout=2)
-        call(ros,'/ik_trial/skip',{},success=False)
-        call(ros,'/ik_trial/stop',{},success=False)
-        call(ros,'/ik_trial/start',{'duration':5,'epsilon':0.05,'success_hold':100})
-        running=ros.next_message('/ik_trial/status',timeout=2,match=lambda m:m['running'] is True)
-        assert running['targets_reached']==0 and running['target'] is not None
-        assert len(running['desired_positions'])==n
-        call(ros,'/ik_trial/skip')
-        call(ros,'/ik_trial/stop')
-        stopped=ros.next_message('/ik_trial/status',timeout=2,match=lambda m:m['running'] is False)
-        assert stopped['target'] is None and stopped['error'] is None
-        assert stopped['desired_positions'] is None and stopped['action_status']=='idle'
+def test_25_action_goal_lifecycle():
+    from arm_sim_node import ArmSimNode
+    from ik_node import IKNode
+    from ik_action_node import IKActionNode
+    arm = ArmSimNode(2)
+    events = []
+    action = IKActionNode(IKNode(arm.parameters), arm, lambda t, m: events.append((t, m)))
+    ok, values, _ = action.send_goal({"x": 1, "y": 1, "epsilon": .01, "success_hold": .2})
+    assert ok
+    first = values["goal_id"]
+    close(endpoint(arm.setpoint.position, arm.parameters.lengths), [1, 1])
+    assert not action.send_goal({"x": 10, "y": 0})[0]
+    assert action.active_goal["goal_id"] == first
+    assert not action.cancel_goal({"goal_id": "wrong"})[0]
+    arm.state.position = arm.setpoint.position[:]
+    action.update(1)
+    action.update(1.1)
+    assert action.active_goal is not None
+    action.update(1.21)
+    assert action.active_goal is None and action.last_result["outcome"] == "reached"
+    action.send_goal({"x": 1.5, "y": .2})
+    previous = action.active_goal["goal_id"]
+    action.send_goal({"x": .5, "y": 1})
+    assert action.last_result["goal_id"] == previous and action.last_result["outcome"] == "preempted"
+    assert action.cancel_goal({})[0] and action.active_goal is None
+    assert any(topic == "/joint_trajectory" for topic, _ in events)

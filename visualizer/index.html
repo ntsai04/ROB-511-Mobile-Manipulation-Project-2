@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pendularm · Algorithm visualizer</title><link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><div class="brand">ROB / 511 <span>PROJECT 02</span></div><div class="offline"><i></i> LOCAL · OFFLINE READY</div></header>
+<main>
+<div class="intro"><div><p class="eyebrow">MOBILE MANIPULATION / ALGORITHM VISUALIZER</p><h1>Pendularm<span>.</span></h1><p>Run the arm geometry, numerical integration, and control algorithms.</p></div><div class="mode-note">Source mode runs this repository’s code.<br>Live mode connects to <code>127.0.0.1:9095</code>.</div></div>
+<nav aria-label="Algorithm views"><button class="tab active" data-page="arm">01 / Arm geometry</button><button class="tab" data-page="integration">02 / Numerical integration</button><button class="tab" data-page="control">03 / Control & dynamics</button></nav>
+<div id="error" role="alert" hidden></div>
+<section id="arm" class="page active">
+<div class="workspace"><aside class="panel"><p class="eyebrow">SOURCE / INVERSE KINEMATICS</p><h2>Set a target</h2><p class="muted">Enter a target position and link lengths. Joint angles use radians.</p>
+<label>Link count<select id="links"><option value="2">2 links</option><option value="3">3 links + orientation</option></select></label>
+<label>Link lengths <small>JSON array</small><input id="lengths" value="[1,1]" spellcheck="false"></label>
+<div class="fields"><label>Target x<input id="tx" type="number" value="1" step="0.1"></label><label>Target y<input id="ty" type="number" value="1" step="0.1"></label></div>
+<label>End orientation φ <small>3 links only</small><input id="phi" type="number" value="0" step="0.1"></label>
+<button class="primary" id="solve">Run inverse kinematics <span>↗</span></button>
+<hr><p class="eyebrow">OPTIONAL / RUNNING PROJECT</p><div class="fields"><button id="snapshot">Read live state</button><button id="servo">Send live IK goal</button></div>
+<div class="fields"><button id="pause">Pause live</button><button id="resume">Resume live</button></div>
+<div class="fields"><button id="enable">Enable PID</button><button id="reset">Reset live arm</button></div><p id="liveStatus" class="muted">Start <code>make run</code> before using live controls.</p>
+</aside><article class="panel visual"><div class="panel-top"><h2>Planar workspace</h2><span id="armBadge" class="badge">SOURCE</span></div><canvas id="armCanvas" width="1000" height="650" aria-label="Computed arm geometry"></canvas><div class="legend"><span><i class="actual"></i> Computed arm</span></div><div class="metrics"><div><small>END POSITION</small><strong id="endPosition">—</strong></div><div><small>ABSOLUTE ORIENTATION</small><strong id="orientation">—</strong></div></div><div id="armReadout" class="readout" aria-live="polite">Run the algorithm to display joint positions.</div></article></div>
+</section>
+<section id="integration" class="page">
+<div class="workspace"><aside class="panel"><p class="eyebrow">SOURCE / NUMERICAL INTEGRATION</p><h2>Trace a forcing function</h2><p class="muted">Integrate x″ = f(t) from an initial position and velocity.</p>
+<label>Forcing preset<select id="forcing"><option value="t">Ramp · t</option><option value="1">Constant · 1</option><option value="t^2">Quadratic · t²</option><option value="sin(t)">Sine · sin(t)</option><option value="custom">Custom expression</option></select></label>
+<label>f(t)<input id="expression" value="t" spellcheck="false"></label>
+<label>Method<select id="method"><option>euler</option><option>midpoint</option><option>verlet</option><option selected>rk4</option></select></label>
+<div class="fields"><label>x₀<input id="x0" type="number" value="1" step=".1"></label><label>v₀<input id="v0" type="number" value="0" step=".1"></label></div>
+<div class="fields"><label>dt<input id="dt" type="number" value=".1" min=".001" step=".01"></label><label>Steps<input id="steps" type="number" value="40" min="1" max="2000"></label></div>
+<button class="primary" id="integrate">Run integration <span>↗</span></button><button id="runAll">Run all four methods</button>
+</aside><article class="panel visual"><div class="panel-top"><h2>Position over time</h2><span class="badge">COMPUTED TRACES</span></div><canvas id="traceCanvas" width="1000" height="650" aria-label="Computed numerical integration traces"></canvas><div class="legend" id="traceLegend"><span><i class="actual"></i> Computed position</span></div><div class="metrics"><div><small>FINAL POSITION</small><strong id="finalPosition">—</strong></div><div><small>FINAL VELOCITY</small><strong id="finalVelocity">—</strong></div></div><div id="integrationReadout" class="readout" aria-live="polite">Run integration to display the computed trajectory.</div></article></div>
+</section>
+<section id="control" class="page">
+<div class="control-grid"><article class="panel"><p class="eyebrow">SOURCE / ONE PID UPDATE</p><h2>Run the controller</h2><div class="fields three"><label>Kp<input id="kp" type="number" value="2" step=".1"></label><label>Ki<input id="ki" type="number" value="1" step=".1"></label><label>Kd<input id="kd" type="number" value="3" step=".1"></label></div><div class="fields"><label>Position<input id="pidq" type="number" value=".2" step=".1"></label><label>Velocity<input id="pidv" type="number" value=".1" step=".1"></label></div><div class="fields"><label>Target position<input id="pidtarget" type="number" value="1" step=".1"></label><label>Target velocity<input id="pidtv" type="number" value=".3" step=".1"></label></div><label>dt<input id="piddt" type="number" value=".1" step=".01" min=".001"></label><button class="primary" id="pid">Run PID update <span>↗</span></button><p class="muted">Each run starts with zero integral state.</p><div class="metrics"><div><small>COMPUTED EFFORT</small><strong id="pidEffort">—</strong></div><div><small>INTEGRAL STATE</small><strong id="pidIntegral">—</strong></div></div><canvas id="pidCanvas" width="800" height="260" aria-label="Computed PID effort"></canvas></article>
+<article class="panel"><p class="eyebrow">SOURCE / ARM DYNAMICS</p><h2>Run forward dynamics</h2><p class="muted">Enter joint state, physical parameters, and applied torques.</p><div class="fields"><label>q <small>JSON array</small><input id="dq" value="[0,0]"></label><label>velocity <small>JSON array</small><input id="dv" value="[0,0]"></label></div><div class="fields"><label>masses <small>JSON array</small><input id="dm" value="[1,1]"></label><label>lengths <small>JSON array</small><input id="dl" value="[1,1]"></label></div><div class="fields"><label>torque <small>JSON array</small><input id="du" value="[0,0]"></label><label>Gravity<input id="gravity" type="number" value="9.81" step=".1"></label></div><button class="primary" id="dynamics">Run dynamics <span>↗</span></button><canvas id="dynamicsCanvas" width="800" height="350" aria-label="Computed joint accelerations"></canvas><div id="dynamicsReadout" class="readout" aria-live="polite">Run dynamics to display computed accelerations and forces.</div><h3>Computed mass matrix</h3><div id="massMatrix" class="matrix-output"></div></article></div>
+</section>
+<footer>NO NETWORK DEPENDENCIES <span>Project 2 / Pendularm</span></footer>
+</main><script src="app.js"></script>
+</body></html>
