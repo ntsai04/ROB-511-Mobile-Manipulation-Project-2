@@ -5,6 +5,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -17,6 +18,11 @@ def arm_points(q, lengths):
     return [[0, 0]] + [list(forward_position(q[:i+1], lengths[:i+1])) for i in range(len(q))]
 
 
+def arm_orientation(q):
+    from kinematics import forward_orientation
+    return forward_orientation(q)
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT / "visualizer"), **kwargs)
@@ -24,16 +30,21 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def reply(self, body, status=200):
         data = json.dumps(body, allow_nan=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
     def do_GET(self):
+        if self.path.split("?", 1)[0] == "/api/stream":
+            return self.stream_states()
         if self.path != "/api/state":
             return super().do_GET()
         try:
@@ -41,10 +52,70 @@ class Handler(SimpleHTTPRequestHandler):
                 ros.subscribe("/joint_states", "sensor_msgs/JointState", timeout=2)
                 state = ros.next_message("/joint_states", timeout=2)
                 params = ros.call_service("/arm_sim/set_params", {}, timeout=2)
+                settings = ros.call_service("/arm_sim/set_integrator", {}, timeout=2).get("values", {})
             self.reply({"state": state, "parameters": params["values"],
-                        "points": arm_points(state["position"], params["values"]["lengths"])})
+                        "points": arm_points(state["position"], params["values"]["lengths"]),
+                        "orientation": arm_orientation(state["position"]), "settings": settings})
         except Exception as error:
             self.reply({"error": str(error), "hint": "Start make run in a second terminal for live state."}, 503)
+
+    def stream_states(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        self.close_connection = True
+        self.connection.settimeout(3)
+
+        def emit(body, event=None):
+            prefix = f"event: {event}\n" if event else ""
+            data = json.dumps(body, allow_nan=False, separators=(",", ":"))
+            self.wfile.write((prefix + "data: " + data + "\n\n").encode())
+            self.wfile.flush()
+
+        try:
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+            with Rosbridge(port=self.server.runtime_port, timeout=2) as ros:
+                ros.subscribe("/joint_states", "sensor_msgs/JointState", timeout=2)
+                parameters = ros.call_service("/arm_sim/set_params", {}, timeout=2)
+                if not parameters.get("result"):
+                    raise ValueError("Runtime parameters unavailable")
+                parameters = parameters["values"]
+                settings = ros.call_service("/arm_sim/set_integrator", {}, timeout=2).get("values", {})
+                refresh_at = time.monotonic() + 1
+                frame_at = 0
+                while True:
+                    state = ros.next_message("/joint_states", timeout=2)
+                    now = time.monotonic()
+                    if now >= refresh_at:
+                        reply = ros.call_service("/arm_sim/set_params", {}, timeout=2)
+                        if not reply.get("result"):
+                            raise ValueError("Runtime parameters unavailable")
+                        parameters = reply["values"]
+                        settings = ros.call_service("/arm_sim/set_integrator", {}, timeout=2).get("values", {})
+                        refresh_at = time.monotonic() + 1
+                    pending = []
+                    for message in ros.pending:
+                        if message.get("op") == "publish" and message.get("topic") == "/joint_states":
+                            state = message["msg"]
+                        else:
+                            pending.append(message)
+                    ros.pending[:] = pending
+                    now = time.monotonic()
+                    if now < frame_at:
+                        continue
+                    emit({"state": state, "parameters": parameters,
+                          "points": arm_points(state["position"], parameters["lengths"]),
+                          "orientation": arm_orientation(state["position"]), "settings": settings})
+                    frame_at = now + 1 / 30
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception:
+            try:
+                emit({"error": "Live playback unavailable. Start make run; the view will reconnect."}, "stream_error")
+            except OSError:
+                pass
 
     def do_POST(self):
         try:
